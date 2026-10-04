@@ -736,6 +736,130 @@
       • <strong>체크포인트(검사점, Checkpoint)</strong> 기법이 함께 적용된 경우: 체크포인트 이전에 이미 완료(Commit)된 트랜잭션은 회복 대상에서 완전히 제외되어 REDO/UNDO 대상 목록 계산 시간을 대폭 줄여줍니다.
     </div>
   </section>
+  <!-- 6. 트랜잭션 회복 기법: REDO / UNDO & Checkpoint 판별 -->
+  <section>
+    <h2>6. 트랜잭션 회복 기법: REDO / UNDO &amp; Checkpoint 판별</h2>
+
+    <h3>1. REDO vs UNDO 수행 및 로그 탐색 방향</h3>
+    <div class="diagram-wrap">
+      <svg width="580" height="150" viewBox="0 0 580 150">
+        <defs>
+          <marker id="arr-r" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#2563eb" />
+          </marker>
+          <marker id="arr-l" markerWidth="6" markerHeight="6" refX="1" refY="3" orient="auto">
+            <path d="M6,0 L0,3 L6,6 Z" fill="#dc2626" />
+          </marker>
+        </defs>
+
+        <!-- 시간 축 라인 -->
+        <line x1="30" y1="75" x2="550" y2="75" stroke="#94a3b8" stroke-width="2"/>
+        <text x="30" y="60" font-size="11" font-weight="700" fill="#64748b">과거 (Start)</text>
+        <text x="520" y="60" font-size="11" font-weight="700" fill="#dc2626">장애(Crash)</text>
+
+        <!-- REDO 화살표 (순방향 / Forward) -->
+        <path d="M 60 30 L 480 30" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arr-r)"/>
+        <text x="270" y="22" font-size="12" font-weight="800" text-anchor="middle" fill="#2563eb">REDO: 순방향 탐색 / 재실행 (Forward: 과거 &rarr; 최신)</text>
+
+        <!-- UNDO 화살표 (역방향 / Backward) -->
+        <path d="M 500 120 L 80 120" fill="none" stroke="#dc2626" stroke-width="2.5" marker-end="url(#arr-l)"/>
+        <text x="290" y="140" font-size="12" font-weight="800" text-anchor="middle" fill="#dc2626">UNDO: 역방향 탐색 / 취소 (Backward: 최신 &rarr; 과거)</text>
+      </svg>
+    </div>
+
+    <ul>
+      <li><strong>UNDO (역방향, Backward)</strong>: 장애 시점의 <strong>가장 최신 변경값부터 거꾸로 취소</strong>하여 원래 이전 값(<span class="math-inline">V<sub>old</sub></span>)으로 롤백</li>
+      <li><strong>REDO (순방향, Forward)</strong>: 트랜잭션이 원래 수행했던 <strong>시간 순서대로 재실행</strong>하여 새로운 값(<span class="math-inline">V<sub>new</sub></span>)을 디스크에 확실히 재반영</li>
+    </ul>
+
+    <h3>2. 즉시 갱신 vs 지연 갱신 핵심 비교</h3>
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:22%;">비교 항목</th>
+            <th style="width:39%;">즉시 갱신 기법 (Immediate)</th>
+            <th style="width:39%;">지연 갱신 기법 (Deferred)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>DB 반영 시점</strong></td>
+            <td>연산 발생 시 즉시 실제 DB 기록</td>
+            <td>Commit 전까지 지연, 로그에만 기록</td>
+          </tr>
+          <tr>
+            <td><strong>로그 기록 내용</strong></td>
+            <td><span class="math-inline">&lt;T, X, V<sub>old</sub>, V<sub>new</sub>&gt;</span> (이전값+새값)</td>
+            <td><span class="math-inline">&lt;T, X, V<sub>new</sub>&gt;</span> (새값만 기록)</td>
+          </tr>
+          <tr>
+            <td><strong>수행 연산</strong></td>
+            <td><span class="hl">REDO 및 UNDO 모두 수행</span></td>
+            <td><span class="hl">REDO만 수행 (UNDO 불필요)</span></td>
+          </tr>
+          <tr>
+            <td><strong>UNDO 생략 이유</strong></td>
+            <td>디스크에 이미 변경사항이 쓰였으므로 취소 필수</td>
+            <td>Commit 전 실제 DB에 쓴 적 없으므로 취소 대상 없음</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>3. Checkpoint(검사점) 유무에 따른 5가지 실전 판별법</h3>
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:16%;">유형</th>
+            <th style="width:44%;">트랜잭션 상황 (시작 &amp; 종료)</th>
+            <th style="width:18%;">복구 작업</th>
+            <th>핵심 판별 이유</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>유형 1</strong></td>
+            <td>Checkpoint <strong>이전 시작 &amp; 이전 Commit 완료</strong></td>
+            <td><span style="color:#64748b; font-weight:700;">작업 없음 (제외)</span></td>
+            <td>검사점 시점에 이미 디스크 완전 반영 완료</td>
+          </tr>
+          <tr>
+            <td><strong>유형 2</strong></td>
+            <td>Checkpoint <strong>이전 시작 &amp; 검사점 이후 Commit</strong></td>
+            <td><strong style="color:#2563eb;">REDO 수행</strong></td>
+            <td>정상 완료되었으나 디스크 미반영 가능성 있어 재반영</td>
+          </tr>
+          <tr>
+            <td><strong>유형 3</strong></td>
+            <td>Checkpoint <strong>이후 시작 &amp; 장애 전 Commit</strong></td>
+            <td><strong style="color:#2563eb;">REDO 수행</strong></td>
+            <td>Commit된 작업의 영속성(Durability) 보장</td>
+          </tr>
+          <tr>
+            <td><strong>유형 4</strong></td>
+            <td>Checkpoint <strong>이전 시작 &amp; 장애 시점까지 미완료</strong></td>
+            <td><strong style="color:#dc2626;">UNDO 수행</strong></td>
+            <td>미완료 트랜잭션이므로 원자성 보장을 위해 롤백</td>
+          </tr>
+          <tr>
+            <td><strong>유형 5</strong></td>
+            <td>Checkpoint <strong>이후 시작 &amp; 장애 시점까지 미완료</strong></td>
+            <td><strong style="color:#dc2626;">UNDO 수행</strong></td>
+            <td>미완료 작업 취소 (지연 갱신이면 UNDO 생략)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="box-warning">
+      <strong>⚠️ 시험장 3초 컷 판별 공식</strong><br>
+      1. <strong>Commit이 Checkpoint보다 왼쪽(과거)에 찍혔는가?</strong> &rarr; <span class="hl">복구 대상에서 완전 제외 (No Action)</span><br>
+      2. <strong>장애(Crash) 직전까지 Commit 도장이 찍혀있는가?</strong> &rarr; <span class="hl">REDO 대상</span> (T2, T3)<br>
+      3. <strong>장애(Crash) 날 때까지 Commit 도장이 없는가?</strong> &rarr; <span class="hl">UNDO 대상</span> (T4, T5, 단 지연갱신은 생략)
+    </div>
+  </section>
 </div>
 
 </body>
